@@ -1,0 +1,20 @@
+# Copy to /etc/udev/rules.d/99-thermal-printer.rules and replace the
+# vendor/product IDs with what `lsusb` shows for your printer.
+#
+# Example lsusb line:
+#   Bus 001 Device 004: ID 0416:5011 Winbond Electronics Corp.
+#                          ^^^^ ^^^^
+#                          VID  PID
+#
+# This rule:
+#   - grants the `lp` group read/write access to the printer
+#   - creates a stable /dev/thermal-printer symlink (independent of plug order)
+#
+# After installing the rule:
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#   sudo usermod -aG lp <your-user>    # then log out / back in
+#
+# And update config.yaml so printer_device is /dev/thermal-printer.
+
+SUBSYSTEM=="usblp", ATTRS{idVendor}=="REPLACE_VID", ATTRS{idProduct}=="REPLACE_PID", MODE="0660", GROUP="lp", SYMLINK+="thermal-printer"

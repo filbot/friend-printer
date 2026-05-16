@@ -1,0 +1,26 @@
+# Copy this file to config.yaml and tweak for your printer.
+# config.yaml is gitignored so local tweaks stay local.
+
+# USB character device the printer shows up as. After the udev rule is in
+# place this should be a stable symlink. Without the rule it's typically
+# /dev/usb/lp0 and requires the bot user to be in the `lp` group.
+printer_device: /dev/usb/lp0
+
+# Printer pixel width. 58mm printers are 384px, 80mm printers are 576px.
+# The POS-5890C is 58mm.
+paper_width_px: 384
+
+# Rate limits. The bot replies with a quippy "try again later" when hit.
+max_prints_per_hour: 30
+max_prints_per_day: 200
+
+# Reject text longer than this. Auto-wrapping handles short messages.
+max_text_length: 2000
+
+# Reject photos with either dimension above this (in source pixels, before
+# the bot resizes). Stops someone DOSing the Pi with a 40-megapixel JPEG.
+max_image_dimension: 4000
+
+# Where the rotating print log goes. Relative paths resolve against the
+# project directory.
+log_path: prints.log

@@ -1,0 +1,28 @@
+[Unit]
+Description=Friend Printer Telegram bot
+After=network-online.target
+Wants=network-online.target
+# Don't try to restart more than 5 times in a 5-minute window.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Replace `pi` with the user that owns the install directory. That user
+# must also be in the `lp` group (or whatever group the udev rule sets).
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/friendprinter
+EnvironmentFile=/home/pi/friendprinter/.env
+ExecStart=/home/pi/friendprinter/.venv/bin/python /home/pi/friendprinter/bot.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Mild hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

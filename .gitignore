@@ -1,0 +1,34 @@
+# --- Secrets & local config ---
+# Never commit the bot token, allowed user ID, or per-host config.
+.env
+.env.*
+!.env.example
+config.yaml
+!config.yaml.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+
+# --- Runtime artifacts ---
+*.log
+*.log.*
+prints.log*
+
+# --- Editor / OS junk ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
