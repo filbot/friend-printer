@@ -39,7 +39,7 @@ from telegram.ext import (
 # from any working directory without breaking.
 PROJECT_DIR = Path(__file__).resolve().parent
 
-REQUIRED_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "ALLOWED_USER_ID")
+REQUIRED_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "ALLOWED_USER_IDS")
 REQUIRED_CONFIG_KEYS = (
     "printer_device",
     "paper_width_px",
@@ -67,12 +67,19 @@ if _missing_env:
     )
 
 try:
-    ALLOWED_USER_ID = int(os.environ["ALLOWED_USER_ID"])
+    ALLOWED_USER_IDS = frozenset(
+        int(p.strip())
+        for p in os.environ["ALLOWED_USER_IDS"].split(",")
+        if p.strip()
+    )
 except ValueError:
     _fail(
-        f"ALLOWED_USER_ID must be an integer Telegram user ID, "
-        f"got: {os.environ['ALLOWED_USER_ID']!r}"
+        f"ALLOWED_USER_IDS must be comma-separated integer Telegram user IDs, "
+        f"got: {os.environ['ALLOWED_USER_IDS']!r}"
     )
+
+if not ALLOWED_USER_IDS:
+    _fail("ALLOWED_USER_IDS must contain at least one Telegram user ID.")
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
@@ -378,7 +385,7 @@ def _blocking_print_image(img: Image.Image) -> None:
 
 def is_authorized(update: Update) -> bool:
     user = update.effective_user
-    return user is not None and user.id == ALLOWED_USER_ID
+    return user is not None and user.id in ALLOWED_USER_IDS
 
 
 async def log_rejected(update: Update) -> None:
