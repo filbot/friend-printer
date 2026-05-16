@@ -6,7 +6,7 @@ The Pi runs a Telegram bot. Whitelisted user sends a message, photo, or sticker.
 
 ## Hardware
 
-- Raspberry Pi Zero 2 W (Pi 3 or 4 also fine)
+- Raspberry Pi (Any will do, I'm running this project on an original Raspberry Pi 1)
 - Generic USB ESC/POS thermal receipt printer (58mm)
 - Power supply for both, or a single barrel-to-USB splitter so the appliance has one cord
 
