@@ -101,7 +101,7 @@ sudo apt update
 sudo apt install -y python3 python3-venv python3-pip git
 
 cd ~
-git clone https://github.com/YOUR_USERNAME/Thermal-Printer.git friendprinter
+git clone https://github.com/filbot/Thermal-Printer.git friendprinter
 cd friendprinter
 
 python3 -m venv .venv
