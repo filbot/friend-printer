@@ -6,8 +6,8 @@ The Pi runs a Telegram bot. Whitelisted user sends a message, photo, or sticker.
 
 ## Hardware
 
-- Raspberry Pi (Any will do, I'm running this project on an original Raspberry Pi 1)
-- Generic USB ESC/POS thermal receipt printer (58mm)
+- Raspberry Pi Zero 2 W (Pi 3 or 4 also fine)
+- Generic USB ESC/POS thermal receipt printer — built and tested on a [POS-5890C](https://www.amazon.com/dp/B07ZS5RH8Y) (58mm)
 - Power supply for both, or a single barrel-to-USB splitter so the appliance has one cord
 
 ## Software
@@ -29,7 +29,27 @@ The bot replies with a quippy acknowledgement on success and a (mostly) helpful 
 
 The walkthrough assumes a fresh Pi running Raspberry Pi OS Lite with SSH enabled.
 
-### 1. Identify the printer
+### 1. Install dependencies and clone the repo
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git \
+    libopenjp2-7 libtiff6 libwebp7 libjpeg62-turbo libfreetype6
+
+cd ~
+git clone https://github.com/YOUR_USERNAME/Thermal-Printer.git friendprinter
+cd friendprinter
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+The extra `lib*` packages are runtime dependencies for Pillow — its wheel links against them, and Pi OS Lite doesn't include them by default. Without them, `import PIL` fails with `ImportError: libopenjp2.so.7: cannot open shared object file` (or similar) the first time the bot starts.
+
+On a Pi Zero 2 W the `pip install` step takes a few minutes — Pillow has C extensions to build.
+
+### 2. Identify the printer
 
 Plug it in, then:
 
@@ -47,9 +67,9 @@ ls -l /dev/usb/lp*
 
 You should see `/dev/usb/lp0`.
 
-### 2. Set up the udev rule
+### 3. Set up the udev rule
 
-Copy the template and fill in your VID/PID:
+From inside the repo (`~/friendprinter`), copy the template and fill in your VID/PID:
 
 ```bash
 sudo cp 99-thermal-printer.rules.example /etc/udev/rules.d/99-thermal-printer.rules
@@ -71,6 +91,8 @@ groups | grep lp
 ls -l /dev/thermal-printer    # symlink created by the udev rule
 ```
 
+If the symlink doesn't appear, unplug and replug the printer's USB cable so the rule re-evaluates against a fresh add event.
+
 Smoke-test the printer:
 
 ```bash
@@ -79,7 +101,7 @@ echo "hello from the pi" > /dev/thermal-printer
 
 You should hear it whir and see paper come out.
 
-### 3. Register a Telegram bot
+### 4. Register a Telegram bot
 
 Open Telegram and message [@BotFather](https://t.me/BotFather):
 
@@ -94,26 +116,11 @@ Find your friend's numeric Telegram ID:
 
 (Or you can use your own ID first to test, and swap to your friend's later.)
 
-### 4. Install the bot
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git
-
-cd ~
-git clone https://github.com/filbot/Thermal-Printer.git friendprinter
-cd friendprinter
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
 ### 5. Configure
 
 ```bash
 cp .env.example .env
-nano .env       # fill in TELEGRAM_BOT_TOKEN and ALLOWED_USER_ID
+nano .env       # fill in TELEGRAM_BOT_TOKEN and ALLOWED_USER_IDS
 
 cp config.yaml.example config.yaml
 nano config.yaml    # adjust printer_device, paper width, limits
@@ -160,7 +167,7 @@ The bot now starts on boot and restarts on failure.
 | Key | Meaning |
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | From @BotFather |
-| `ALLOWED_USER_ID` | Numeric Telegram ID of the one user allowed to print |
+| `ALLOWED_USER_IDS` | Comma-separated numeric Telegram IDs of users allowed to print |
 
 ## Operating it
 
@@ -186,7 +193,9 @@ The print history log rotates at ~1MB and keeps three backups. Look in the proje
 
 **Photos print with heavy vertical banding.** Make sure the image-print impl is `bitImageColumn` (default in `bot.py`). Some printer firmware also chokes if the Pi can't keep up — try a shorter USB cable or a powered hub.
 
-**Bot is silent for the friend.** Check `journalctl -u friendprinter` for a `rejected non-whitelisted user` line. The `ALLOWED_USER_ID` in `.env` is the numeric ID, not a `@username`.
+**Bot is silent for the friend.** Check `journalctl -u friendprinter` for a `rejected non-whitelisted user` line. The IDs in `ALLOWED_USER_IDS` are numeric Telegram IDs, not `@usernames`, and the list is comma-separated.
+
+**`ImportError: libfoo.so.N: cannot open shared object file`** on startup. A system library Pillow's wheel was linked against is missing. Install it with `sudo apt install -y libfoo<N>` (e.g. `libopenjp2-7`, `libtiff6`, `libwebp7`). Step 1 lists the common ones; if you skipped any, install them now.
 
 **Animated stickers don't print.** Correct — only static images render on a thermal printer. The bot tells the sender.
 
