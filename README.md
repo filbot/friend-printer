@@ -1,143 +1,187 @@
 # Thermal Printer
 
-A standalone thermal receipt printer "appliance" that prints whatever a single trusted friend sends from their phone. Lives on a desk, decorated like an object, comes alive at random.
+A little appliance for your desk. A friend sends a text or photo from Telegram. Your printer prints it on receipt paper.
 
-The Pi runs a Telegram bot. Whitelisted user sends a message, photo, or sticker. The bot prints it. That's the whole thing.
+## What you're building
 
-## Hardware
+A Raspberry Pi runs a small Telegram bot. The bot accepts messages only from people you whitelist (you, your friend, whoever). When a message comes in, the bot formats it for the printer and pushes it out.
 
-- Raspberry Pi Zero 2 W (Pi 3 or 4 also fine)
-- Generic USB ESC/POS thermal receipt printer — built and tested on a [POS-5890C](https://www.amazon.com/dp/B07ZS5RH8Y) (58mm)
-- Power supply for both, or a single barrel-to-USB splitter so the appliance has one cord
+## What you need
 
-## Software
+Hardware:
 
-- Raspberry Pi OS Lite (headless)
-- Python 3.10+
-- [python-escpos](https://github.com/python-escpos/python-escpos) — printer control
-- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — messaging
-- [Pillow](https://github.com/python-pillow/Pillow) — image preprocessing (resize, grayscale, Floyd-Steinberg dither)
-- systemd to run the bot as a service
+- Any Raspberry Pi (I'm running this from an original Raspberry Pi 1)
+- USB ESC/POS thermal receipt printer. This was built and tested on a POS-5890C, which is the cheap 58mm kind you see around
+- Power for both. One barrel-to-USB splitter keeps it to a single cord
+- A microSD card (8GB+) and a way to flash it from your laptop
 
-## How it works
+Accounts:
 
-A `RateLimiter` enforces per-hour and per-day caps. Text is wrapped to the printer's column width and stripped of curly quotes / em-dashes that the printer's codepage can't render. Photos and stickers are downscaled to the paper width, autocontrasted, dithered to 1-bit, and pushed in ESC/POS column mode (raster mode produces banding on the POS-5890C). Print attempts are logged to a rotating local file and to journalctl. Non-whitelisted users are silently ignored.
+- A Telegram account (free, no phone number sharing)
 
-The bot replies with a quippy acknowledgement on success and a (mostly) helpful message on rate-limit, oversized input, or printer failure.
+That's it. No domain name, no cloud account, nothing else to pay for.
+
+## Before you start
+
+This guide assumes a few things:
+
+1. Your Pi is running **Raspberry Pi OS Lite** (the headless version with no desktop). If you've never set up a Pi before, the [Raspberry Pi Imager](https://www.raspberrypi.com/software/) walks you through it. Enable SSH and your Wi-Fi in the Imager's advanced options so you can log in without a monitor.
+2. You can SSH into the Pi. From your laptop's terminal: `ssh pi@raspberrypi.local` (or use the Pi's IP address). If you set a different username in the Imager, use that.
+3. You're comfortable copy-pasting commands and reading what they do. Every command below is explained. Don't run things you don't understand. If a step looks scary, the explanation underneath usually clears it up.
+
+A note on `sudo`: any command starting with `sudo` runs as the root user. It's how Linux says "this affects the whole system, not just you." You'll get prompted for your password the first time in a session. That's normal.
+
+A note on `nano`: when a step says `nano somefile`, it opens a basic text editor. Save with `Ctrl-O` then `Enter`. Exit with `Ctrl-X`. If you're more comfortable with another editor, use it.
 
 ## Setup
 
-The walkthrough assumes a fresh Pi running Raspberry Pi OS Lite with SSH enabled.
+### Step 1. Install the system packages and clone this repo
 
-### 1. Install dependencies and clone the repo
+SSH into your Pi, then run:
 
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip git \
     libopenjp2-7 libtiff6 libwebp7 libjpeg62-turbo libfreetype6
+```
 
+The first line refreshes the list of available packages. The second installs Python, git, and a handful of image libraries that Pillow (the Python image library) needs. Pi OS Lite doesn't ship with these by default. If you skip them, the bot crashes on startup with a confusing `libopenjp2.so.7: cannot open shared object file` error.
+
+Now pull down the project:
+
+```bash
 cd ~
 git clone https://github.com/YOUR_USERNAME/Thermal-Printer.git friendprinter
 cd friendprinter
+```
 
+Replace `YOUR_USERNAME` with whoever owns the fork you're using.
+
+Set up a Python virtual environment and install the bot's dependencies:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The extra `lib*` packages are runtime dependencies for Pillow — its wheel links against them, and Pi OS Lite doesn't include them by default. Without them, `import PIL` fails with `ImportError: libopenjp2.so.7: cannot open shared object file` (or similar) the first time the bot starts.
+A virtual environment is a sandbox for Python packages so they don't conflict with system Python. The `source .venv/bin/activate` line activates it. You'll know it worked because your prompt picks up a `(.venv)` prefix.
 
-On a Pi Zero 2 W the `pip install` step takes a few minutes — Pillow has C extensions to build.
+On a Pi Zero 2 W, this install takes a few minutes. Pillow has C code to compile and the Pi isn't fast. Go make tea.
 
-### 2. Identify the printer
+### Step 2. Find the printer
 
-Plug it in, then:
+Plug the printer's USB cable into the Pi and turn it on. Then ask Linux what it sees:
 
 ```bash
 lsusb
 ```
 
-Find the line for your printer and note the VID:PID. Something like `ID 0416:5011`.
+You'll get a list of USB devices. Find your printer's line. It looks something like:
 
-Confirm the kernel sees it as a USB printer:
+```
+Bus 001 Device 004: ID 0416:5011 Winbond Electronics Corp.
+```
+
+The important bit is `0416:5011`. The first part (`0416`) is the vendor ID. The second (`5011`) is the product ID. Write both down. You need them in the next step.
+
+Now check that the kernel exposed it as a printer device:
 
 ```bash
 ls -l /dev/usb/lp*
 ```
 
-You should see `/dev/usb/lp0`.
+You should see `/dev/usb/lp0`. If you see "No such file or directory", the printer is plugged in but not recognized as a USB printer. Try a different USB port, or check that the printer is actually powered on.
 
-### 3. Set up the udev rule
+### Step 3. Give your user permission to talk to the printer
 
-From inside the repo (`~/friendprinter`), copy the template and fill in your VID/PID:
+Out of the box, only root can write to `/dev/usb/lp0`. You don't want to run the bot as root. The fix is two things: a udev rule that gives the device a friendly name and predictable permissions, and adding your user to the `lp` group.
+
+From inside the project folder, copy the example rule and edit it:
 
 ```bash
 sudo cp 99-thermal-printer.rules.example /etc/udev/rules.d/99-thermal-printer.rules
-sudo nano /etc/udev/rules.d/99-thermal-printer.rules    # replace REPLACE_VID and REPLACE_PID
+sudo nano /etc/udev/rules.d/99-thermal-printer.rules
+```
+
+Inside the file, replace `REPLACE_VID` and `REPLACE_PID` with the VID and PID you noted in Step 2. Save with `Ctrl-O`, `Enter`, then `Ctrl-X`.
+
+Tell udev to reload the rules:
+
+```bash
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-Add your user to the `lp` group so it can write to the printer:
+Add your user to the `lp` group (the standard "line printer" group on Linux):
 
 ```bash
 sudo usermod -aG lp $USER
 ```
 
-Log out and back in for the group change to take effect. Verify:
+This change doesn't take effect until you log out and back in. Disconnect your SSH session, reconnect, then check:
 
 ```bash
 groups | grep lp
-ls -l /dev/thermal-printer    # symlink created by the udev rule
+ls -l /dev/thermal-printer
 ```
 
-If the symlink doesn't appear, unplug and replug the printer's USB cable so the rule re-evaluates against a fresh add event.
+The first command should print a line containing `lp`. The second should show a symlink that your udev rule created. If the symlink isn't there, unplug the printer's USB cable, wait a second, and plug it back in so the rule fires fresh.
 
-Smoke-test the printer:
+Now the moment of truth. Send some text straight to the printer:
 
 ```bash
 echo "hello from the pi" > /dev/thermal-printer
 ```
 
-You should hear it whir and see paper come out.
+The printer should whir and spit out a tiny receipt. If it doesn't, check the Troubleshooting section before moving on. Don't continue until this works.
 
-### 4. Register a Telegram bot
+### Step 4. Make a Telegram bot
 
-Open Telegram and message [@BotFather](https://t.me/BotFather):
+Open Telegram on your phone or laptop and start a chat with [@BotFather](https://t.me/BotFather). BotFather is Telegram's official bot for making bots.
 
-1. `/newbot`
-2. Pick a display name and a username (`*_bot` suffix required)
-3. BotFather replies with a token like `123456:ABC-DEF...`. Save it.
+1. Send `/newbot`
+2. Pick a display name (anything you want)
+3. Pick a username. It has to end in `bot` (e.g. `my_friend_printer_bot`)
+4. BotFather sends back a token that looks like `123456:ABC-DEF...`. **Save this.** It's the password to your bot. Don't share it or commit it.
 
-Find your friend's numeric Telegram ID:
+You also need the numeric Telegram ID of every person you want to let print. To find your own ID, message [@userinfobot](https://t.me/userinfobot). It replies with `Id: 123456789`. That number is what you want, not the `@username`.
 
-1. Have them message [@userinfobot](https://t.me/userinfobot)
-2. It replies with `Id: 123456789` — that's the value you want
+Get your friend's ID the same way. They message @userinfobot and send you the number back.
 
-(Or you can use your own ID first to test, and swap to your friend's later.)
+### Step 5. Configure the bot
 
-### 5. Configure
+Two config files: `.env` for secrets, `config.yaml` for settings.
 
 ```bash
 cp .env.example .env
-nano .env       # fill in TELEGRAM_BOT_TOKEN and ALLOWED_USER_IDS
-
-cp config.yaml.example config.yaml
-nano config.yaml    # adjust printer_device, paper width, limits
+nano .env
 ```
 
-Confirm the bot can start:
+Fill in `TELEGRAM_BOT_TOKEN` (the BotFather token) and `ALLOWED_USER_IDS` (comma-separated numeric IDs). Save and exit.
 
 ```bash
-source .venv/bin/activate
+cp config.yaml.example config.yaml
+nano config.yaml
+```
+
+The defaults are sensible. The one you might want to change is `printer_device`, which should point at the udev symlink (`/dev/thermal-printer`) if Step 3 went well. If you have an 80mm printer instead of a 58mm one, set `paper_width_px: 576`.
+
+Make sure your virtualenv is still active (`(.venv)` in your prompt). If not, run `source .venv/bin/activate` from the project folder. Then start the bot manually to test:
+
+```bash
 python bot.py
 ```
 
-Send a test message from the whitelisted Telegram account. If you see the printer print and a reply come back, you're good. Stop with `Ctrl-C`.
+From a whitelisted Telegram account, send the bot a message. The printer should print it within a few seconds and you'll see a reply in Telegram. If it works, kill the bot with `Ctrl-C`. You're ready for the final step.
 
-### 6. Install the systemd service
+### Step 6. Run the bot as a service
 
-The unit file assumes the user is `pi` and the install dir is `/home/pi/friendprinter`. If yours differs, edit `friendprinter.service` accordingly.
+You don't want to keep an SSH session open forever. systemd is Linux's service manager. It runs the bot in the background, restarts it if it crashes, and starts it again on reboot.
+
+The service file in the repo assumes your user is `pi` and the project lives at `/home/pi/friendprinter`. If either is different for you, edit `friendprinter.service` first and change the paths.
+
+Then install it:
 
 ```bash
 sudo cp friendprinter.service /etc/systemd/system/friendprinter.service
@@ -146,32 +190,34 @@ sudo systemctl enable --now friendprinter
 sudo systemctl status friendprinter
 ```
 
-The bot now starts on boot and restarts on failure.
+The `status` command should show `active (running)` in green. If it says `failed`, scroll up in the output for the actual error. The most common cause is wrong paths in the service file.
 
-## Configuration reference
+That's it. Reboot the Pi (`sudo reboot`) to confirm the bot comes back on its own. Send it a message after it boots to be sure.
+
+## Config reference
 
 `config.yaml`:
 
 | Key | Meaning |
 | --- | --- |
-| `printer_device` | Path to the printer's character device (recommended: the udev symlink) |
+| `printer_device` | Path to the printer's character device. Use the udev symlink if you can |
 | `paper_width_px` | 384 for 58mm printers, 576 for 80mm |
-| `max_prints_per_hour` | Rolling-window cap |
-| `max_prints_per_day` | Rolling-window cap |
+| `max_prints_per_hour` | Rolling cap on prints in any 60-minute window |
+| `max_prints_per_day` | Same, for 24 hours |
 | `max_text_length` | Reject single messages longer than this |
-| `max_image_dimension` | Reject images larger than this on either side, pre-resize |
-| `log_path` | Rotating file log destination (relative paths resolve from project dir) |
+| `max_image_dimension` | Reject images larger than this on either side (before resize) |
+| `log_path` | Where the print history log goes. Relative paths resolve from the project folder |
 
 `.env`:
 
 | Key | Meaning |
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | From @BotFather |
-| `ALLOWED_USER_IDS` | Comma-separated numeric Telegram IDs of users allowed to print |
+| `ALLOWED_USER_IDS` | Comma-separated numeric Telegram IDs allowed to print |
 
-## Operating it
+## Day-to-day operation
 
-Tail the live log:
+Watch the live log:
 
 ```bash
 journalctl -u friendprinter -f
@@ -183,34 +229,46 @@ Restart after a config change:
 sudo systemctl restart friendprinter
 ```
 
-The print history log rotates at ~1MB and keeps three backups. Look in the project directory for `prints.log*`.
+Stop the bot:
+
+```bash
+sudo systemctl stop friendprinter
+```
+
+Start it again:
+
+```bash
+sudo systemctl start friendprinter
+```
+
+The print history (separate from the systemd log) is in `prints.log` in the project folder. It rotates at about 1MB and keeps three backups.
 
 ## Troubleshooting
 
-**Bot starts but nothing prints.** Confirm the bot user is in the `lp` group (`groups`) and `printer_device` in `config.yaml` points to a real path (`ls -l /dev/thermal-printer`). Test the device directly with `echo "test" > /dev/thermal-printer`.
+**The bot starts but nothing prints.** Two things to check. Run `groups` and confirm `lp` is in the list. Then check `printer_device` in `config.yaml` points to a real path with `ls -l /dev/thermal-printer`. Test the device directly with `echo "test" > /dev/thermal-printer`.
 
-**`Permission denied` on the printer device.** udev rule didn't apply, or you didn't log out/back in after adding the user to `lp`. Re-run `sudo udevadm control --reload-rules && sudo udevadm trigger` and reboot if needed.
+**`Permission denied` writing to the printer.** Either the udev rule isn't applying or you didn't log out and back in after adding yourself to `lp`. Try `sudo udevadm control --reload-rules && sudo udevadm trigger`, and if that doesn't help, reboot.
 
-**Photos print with heavy vertical banding.** Make sure the image-print impl is `bitImageColumn` (default in `bot.py`). Some printer firmware also chokes if the Pi can't keep up — try a shorter USB cable or a powered hub.
+**Photos print with heavy vertical banding.** The bot uses `bitImageColumn` mode by default for a reason. If you changed it, switch back. If it's still banding, try a shorter USB cable or a powered USB hub. Some printer firmware can't keep up if the Pi's USB power sags.
 
-**Bot is silent for the friend.** Check `journalctl -u friendprinter` for a `rejected non-whitelisted user` line. The IDs in `ALLOWED_USER_IDS` are numeric Telegram IDs, not `@usernames`, and the list is comma-separated.
+**The bot is silent when my friend messages it.** Run `journalctl -u friendprinter -f` and have them send another message. If you see `rejected non-whitelisted user`, the numeric ID in `ALLOWED_USER_IDS` is wrong. Remember: numeric IDs, not `@usernames`, and separated by commas.
 
-**`ImportError: libfoo.so.N: cannot open shared object file`** on startup. A system library Pillow's wheel was linked against is missing. Install it with `sudo apt install -y libfoo<N>` (e.g. `libopenjp2-7`, `libtiff6`, `libwebp7`). Step 1 lists the common ones; if you skipped any, install them now.
+**`ImportError: libfoo.so.N: cannot open shared object file`** at startup. A system library Pillow needs is missing. Install it with `sudo apt install -y libfoo<N>` (for example `libopenjp2-7`, `libtiff6`, `libwebp7`). Step 1 covers the common ones. If you skipped any, install them now.
 
-**Animated stickers don't print.** Correct — only static images render on a thermal printer. The bot tells the sender.
+**Animated stickers don't print.** Correct. Thermal printers can only do static images. The bot replies to the sender to let them know.
 
 ## What's not here (yet)
 
-- Multiple users
+- Multiple users with separate quotas
 - A web dashboard
-- Print queue that survives reboot
-- Non-Telegram interfaces
-- Anything to do with the housing (decorate it yourself)
+- A print queue that survives a reboot
+- Anything besides Telegram (no SMS, email, web form)
+- Anything about the physical housing. Build whatever case you want around it
 
-## Friend-facing onboarding
+## Onboarding the friend
 
-[FRIEND_SETUP.md](FRIEND_SETUP.md) is the doc the maintainer sends to the friend who'll be using the printer. It explains, in plain language, how to find their Telegram ID and send the first message. Edit it for your own bot username before sharing.
+When you're ready to hand it over, send your friend [FRIEND_SETUP.md](FRIEND_SETUP.md). It's a plain-language doc that walks them through getting Telegram, finding the bot, and sending the first message. Edit the bot username in there before sharing.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
